@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 
-def parse_karate_clubs(text):
+def parse_karate_clubs_v2(text):
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     clubs = []
     club = {}
@@ -10,52 +11,80 @@ def parse_karate_clubs(text):
     i = 0
     while i < len(lines):
         line = lines[i]
-        if line.isupper() and not line.startswith(("ADRESSE", "EMAIL", "TELEPHONE")):
+        
+        # Détecter nom du club : ligne en majuscules, pas mot clé
+        if line.isupper() and line not in ["ADRESSE", "EMAIL", "TELEPHONE"]:
             if club:
                 clubs.append(club)
                 club = {}
             club["Nom"] = line
             club["Adresse"] = ""
+            club["Code Postal"] = ""
             club["Téléphone"] = ""
-            club["Email"] = ""
             i += 1
             continue
         
+        # Adresse : après "ADRESSE" prendre toutes les lignes jusqu'à EMAIL, TELEPHONE ou nouveau club
         if line.upper() == "ADRESSE":
             i += 1
             adresse_lines = []
-            while i < len(lines) and lines[i].upper() not in ["EMAIL", "TELEPHONE"] and not (lines[i].isupper() and lines[i] not in ["ADRESSE", "EMAIL", "TELEPHONE"]):
-                adresse_lines.append(lines[i])
+            while i < len(lines):
+                l = lines[i]
+                if l.upper() in ["EMAIL", "TELEPHONE"]:
+                    break
+                # Si nouvelle ligne majuscule = nouveau club, stop adresse
+                if l.isupper() and l not in ["ADRESSE", "EMAIL", "TELEPHONE"]:
+                    break
+                adresse_lines.append(l)
                 i += 1
-            club["Adresse"] = ", ".join(adresse_lines).strip()
+            adresse = ", ".join(adresse_lines).strip()
+            club["Adresse"] = adresse
+            
+            # Extraire code postal (5 chiffres)
+            cp_match = re.search(r"\b(\d{5})\b", adresse)
+            club["Code Postal"] = cp_match.group(1) if cp_match else ""
             continue
         
-        if line.upper() == "TELEPHONE" or (line.replace(" ", "").replace(".", "").isdigit() and len(line.replace(" ", "").replace(".", "")) >= 8):
+        # Téléphone(s) : ligne(s) après "TELEPHONE" ou ligne(s) avec format n° classique
+        if line.upper() == "TELEPHONE":
+            i += 1
             phones = []
-            while i < len(lines) and (lines[i].replace(" ", "").replace(".", "").isdigit() or lines[i].startswith("0") or "/" in lines[i] or any(c.isdigit() for c in lines[i])):
-                phones.append(lines[i])
+            while i < len(lines):
+                l = lines[i]
+                # Stop si on arrive à EMAIL, nouveau club, ou ADRESSE
+                if l.upper() in ["EMAIL", "ADRESSE"]:
+                    break
+                if l.isupper() and l not in ["ADRESSE", "EMAIL", "TELEPHONE"]:
+                    break
+                # Garder les lignes contenant chiffres ou séparateurs habituels
+                if re.search(r"[\d\s\./\-]+", l):
+                    phones.append(l)
+                else:
+                    break
                 i += 1
-            club["Téléphone"] = " / ".join(phones)
+            club["Téléphone"] = " / ".join(phones).strip()
             continue
         
-        if line.upper() == "EMAIL" or "@" in line:
-            emails = []
-            while i < len(lines) and ("@" in lines[i] or lines[i].upper() == "EMAIL"):
-                if lines[i].upper() != "EMAIL":
-                    emails.append(lines[i])
-                i += 1
-            club["Email"] = " / ".join(emails)
+        # Ligne isolée avec numéro de téléphone (sans "TELEPHONE" label)
+        if re.fullmatch(r"(\d[\d\s\./\-]{7,}\d)", line):
+            # rajoute au téléphone existant
+            if "Téléphone" in club and club["Téléphone"]:
+                club["Téléphone"] += " / " + line
+            else:
+                club["Téléphone"] = line
+            i += 1
             continue
         
         i += 1
-
+    
+    # Dernier club à ajouter
     if club:
         clubs.append(club)
 
     return pd.DataFrame(clubs)
 
 
-st.title("Parser clubs de karaté Savoie vers XLSX")
+st.title("Parser clubs de karaté Savoie vers XLSX - V2")
 
 input_text = st.text_area("Colle ici la liste brute des clubs de karaté (comme dans ton exemple)", height=400)
 
@@ -64,7 +93,7 @@ if st.button("Parser et générer XLSX"):
         st.warning("Merci de coller le texte avant de lancer le parsing.")
     else:
         try:
-            df = parse_karate_clubs(input_text)
+            df = parse_karate_clubs_v2(input_text)
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='ClubsKarate')
@@ -73,7 +102,7 @@ if st.button("Parser et générer XLSX"):
             st.download_button(
                 label="Télécharger le fichier Excel",
                 data=output,
-                file_name="clubs_karate_savoie.xlsx",
+                file_name="clubs_karate_savoie_v2.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         except Exception as e:
